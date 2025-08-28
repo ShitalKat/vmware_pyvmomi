@@ -1,19 +1,21 @@
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
 import ssl
-
 from enum import Enum
 
 class PowerAction(Enum):
+    """
+    Enum for supported VM power operations.
+    """
     POWER_ON = "power_on"
     POWER_OFF = "power_off"
     REBOOT = "reboot"
 
-
 def connect_to_vcenter(host="localhost", port=443, user="user", pwd="pass"):
-    '''
-    Connects to vCenter and returns the service instance.
-    '''
+    """
+    Connects to the vCenter server and returns a service instance (si).
+    Uses an unverified SSL context for simulator compatibility.
+    """
     context = ssl._create_unverified_context()
     try:
         print('Trying to connect to vCenter...')
@@ -24,29 +26,27 @@ def connect_to_vcenter(host="localhost", port=443, user="user", pwd="pass"):
             port=port,
             sslContext=context
         )
-        print("Connected to vCenter Simulator!")
+        print("✅ Connected to vCenter Simulator!")
         return si
     except Exception as e:
-        print("Connection failed:", e)
+        print("❌ Connection failed:", e)
         return None
 
-def list_vms(si):
-    '''
-    Lists all VMs with their power state, CPU, and memory.
-    I will see below VMS
-    DC0_H0_VM0
-    DC0_H0_VM1
-    DC0_C0_RP0_VM0
-    DC0_C0_RP0_VM1
 
-    ...even though I haven't created any manually is because the nimmis/vcsim Docker image (vCenter simulator) comes preloaded with a mock inventory. This includes:
-    Datacenters
-    Clusters
-    Hosts
-    Resource Pools
-    Virtual Machines
-    These are fake objects designed to simulate a real vSphere environment so we can test and learn using tools like pyVmomi and pyVim.
-    '''
+def list_vms(si):
+    """
+    Lists all Virtual Machines (VMs) in the connected vCenter.
+
+    Displays:
+        - VM Name
+        - Power State
+        - CPU count
+        - Memory allocation
+
+    Note:
+        When using the nimmis/vcsim simulator, mock VMs like DC0_H0_VM0
+        will appear even if you haven’t created them manually.
+    """
     if not si:
         print("No connection to vCenter.")
         return
@@ -54,10 +54,9 @@ def list_vms(si):
     content = si.RetrieveContent()
     container = content.rootFolder
     viewType = [vim.VirtualMachine]
-    recursive = True
-    containerView = content.viewManager.CreateContainerView(container, viewType, recursive)
+    containerView = content.viewManager.CreateContainerView(container, viewType, True)
 
-    print("\nVM Inventory:")
+    print("\n📋 VM Inventory:")
     for vm in containerView.view:
         summary = vm.summary
         print(f"Name: {summary.config.name}")
@@ -66,13 +65,19 @@ def list_vms(si):
         print(f"Memory: {summary.config.memorySizeMB} MB")
         print("-" * 40)
 
-# Utility Function
+
 def get_first_datastore(si):
+    """
+    Retrieves the first datastore available in the environment.
+
+    Args:
+        si: ServiceInstance object.
+
+    Returns:
+        Datastore object if found, otherwise None.
+    """
     content = si.RetrieveContent()
-    container = content.rootFolder
-    viewType = [vim.Datastore]
-    recursive = True
-    containerView = content.viewManager.CreateContainerView(container, viewType, recursive)
+    containerView = content.viewManager.CreateContainerView(content.rootFolder, [vim.Datastore], True)
 
     datastores = containerView.view
     if datastores:
@@ -82,19 +87,38 @@ def get_first_datastore(si):
         print("❌ No datastore found.")
         return None
 
-# Utility Function
+
 def vm_exists(si, vm_name):
+    """
+    Checks if a VM with the given name exists.
+
+    Args:
+        si: ServiceInstance object.
+        vm_name (str): Name of the VM to check.
+
+    Returns:
+        bool: True if VM exists, False otherwise.
+    """
     content = si.RetrieveContent()
-    container = content.rootFolder
-    viewType = [vim.VirtualMachine]
-    recursive = True
-    containerView = content.viewManager.CreateContainerView(container, viewType, recursive)
+    containerView = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True)
 
     for vm in containerView.view:
         if vm.name == vm_name:
             return True
     return False
+
+
 def create_vm(si, vm_name="Shital_TestVM"):
+    """
+    Creates a new VM in the vCenter environment.
+
+    Args:
+        si: ServiceInstance object.
+        vm_name (str): Name of the new VM.
+
+    Returns:
+        Task object representing the VM creation.
+    """
     try:
         if vm_exists(si, vm_name):
             print(f"⚠️ VM '{vm_name}' already exists. Skipping creation.")
@@ -104,26 +128,19 @@ def create_vm(si, vm_name="Shital_TestVM"):
         datacenter = content.rootFolder.childEntity[0]
         vm_folder = datacenter.vmFolder
         resource_pool = datacenter.hostFolder.childEntity[0].resourcePool
-
         datastore = get_first_datastore(si)
 
         vm_config = vim.vm.ConfigSpec(
             name=vm_name,
-            memoryMB=128,  # Keep it small
+            memoryMB=128,
             numCPUs=1,
-            guestId="otherGuest",  # Use basic guest ID for compatibility
-            #version="vmx-14",
-
+            guestId="otherGuest",
             files=vim.vm.FileInfo(vmPathName=f"[{datastore.name}]")
-
         )
-
 
         print(f"Creating VM: {vm_name}")
         task = vm_folder.CreateVM_Task(config=vm_config, pool=resource_pool)
 
-
-        # Wait for task to complete
         while task.info.state not in [vim.TaskInfo.State.success, vim.TaskInfo.State.error]:
             continue
 
@@ -133,31 +150,32 @@ def create_vm(si, vm_name="Shital_TestVM"):
             print(f"❌ VM creation failed: {task.info.error.msg}")
         return task
 
-
-    except vim.fault.InvalidName as e:
-        print(f"Invalid VM name: {e.msg}")
-    except vim.fault.AlreadyExists as e:
-        print(f"VM already exists: {e.msg}")
-    except vim.fault.NotFound as e:
-        print(f"Resource not found: {e.msg}")
     except Exception as e:
-        print(f"Unexpected error during VM creation: {e}")
+        print(f"❌ Error during VM creation: {e}")
     return None
+
+
 def delete_vm(si, vm_name):
+    """
+    Deletes a VM from the vCenter environment.
+
+    Args:
+        si: ServiceInstance object.
+        vm_name (str): Name of the VM to delete.
+
+    Returns:
+        Task object if deletion initiated, otherwise None.
+    """
     content = si.RetrieveContent()
-    container = content.rootFolder
-    viewType = [vim.VirtualMachine]
-    recursive = True
-    containerView = content.viewManager.CreateContainerView(container, viewType, recursive)
+    containerView = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True)
 
     for vm in containerView.view:
         if vm.name == vm_name:
-            print(f"Deleting VM: {vm_name}")
-            task = vm.Destroy_Task()
-            return task
-    print(f"VM '{vm_name}' not found.")
-    return None
+            print(f"🗑️ Deleting VM: {vm_name}")
+            return vm.Destroy_Task()
 
+    print(f"⚠️ VM '{vm_name}' not found.")
+    return None
 
 def control_vm_power(si, vm_name, action: PowerAction):
     """
@@ -281,7 +299,6 @@ def clone_vm_from_snapshot(si, source_vm_name, clone_name):
                 print(f"❌ Error cloning VM: {e}")
             return
     print(f"❌ Source VM '{source_vm_name}' not found or has no snapshots.")
-
 
 def compare_vm_to_snapshot(si, vm_name, snapshot_name="Snapshot1"):
     content = si.RetrieveContent()
@@ -511,12 +528,8 @@ def demo_snapshot():
     si = connect_to_vcenter()
     if si:
         # ---- Check Snapshot functionality ---- #
+        create_vm(si,'Shital_Test_snapshot_VM')
         control_vm_power(si, "Shital_Test_snapshot_VM", PowerAction.POWER_OFF)
-        delete_vm(si, "Shital_Test_snapshot_VM") # if any
-        delete_vm(si, "Clone_shitalVM")#
-
-        create_vm(si, "Shital_Test_snapshot_VM")
-        control_vm_power(si, "Shital_Test_snapshot_VM", PowerAction.POWER_ON)
         take_snapshot(si, "Shital_Test_snapshot_VM", snapshot_name="InitialSnap")
 
         print("🔧 Modifying VM 'Shital_Test_snapshot_VM' memory to simulate change...")
@@ -541,11 +554,9 @@ def demo_snapshot():
         list_vms(si)
         Disconnect(si)
 
-
 def demo_vm_creation():
     si = connect_to_vcenter()
     if si:
-        list_vms(si)
         create_vm(si, "Shital_TestVM")
         control_vm_power(si, "Shital_TestVM", PowerAction.POWER_ON)
         list_vms(si)
@@ -553,21 +564,22 @@ def demo_vm_creation():
         control_vm_power(si, "Shital_TestVM", PowerAction.POWER_OFF)
         delete_vm(si, "Shital_TestVM")  # Uncomment to delete
 
-
-if __name__ == '__main__':
+def demo_report():
     si = connect_to_vcenter()
     if si:
-        #list_vms(si)
-        #list_datastores_with_space(si)
-        #report_esxi_hosts_health(si)
-        create_vm(si, "Shital_TestVM")
-        control_vm_power(si, "Shital_TestVM", PowerAction.POWER_OFF)
-        control_vm_power(si, "Shital_TestVM", PowerAction.POWER_ON)
-
+        list_vms(si)
+        list_datastores_with_space(si)
+        report_esxi_hosts_health(si)
         monitor_recent_vm_events(si)
-    #delete_vm(si, 'TemplateVM')
-    #delete_vm(si,'Shital_ClonedVM')
-    #list_vms(si)
-    #demo_template()
+
+
+def main():
+    demo_report()
+    demo_vm_creation()
+    demo_snapshot()
+    demo_template()
+
+if __name__ == '__main__':
+    main()
 
 
